@@ -184,6 +184,8 @@ static arm_timer_state *arm_timer_init(uint32_t freq)
 #define TYPE_SP804 "sp804"
 #define SP804(obj) OBJECT_CHECK(SP804State, (obj), TYPE_SP804)
 
+uint64_t fake_value_for_test;
+
 typedef struct SP804State {
     SysBusDevice parent_obj;
 
@@ -213,53 +215,13 @@ static void sp804_set_irq(void *opaque, int irq, int level)
 static uint64_t sp804_read(void *opaque, hwaddr offset,
                            unsigned size)
 {
-    SP804State *s = (SP804State *)opaque;
-
-    if (offset < 0x20) {
-        return arm_timer_read(s->timer[0], offset);
-    }
-    if (offset < 0x40) {
-        return arm_timer_read(s->timer[1], offset - 0x20);
-    }
-
-    /* TimerPeriphID */
-    if (offset >= 0xfe0 && offset <= 0xffc) {
-        return sp804_ids[(offset - 0xfe0) >> 2];
-    }
-
-    switch (offset) {
-    /* Integration Test control registers, which we won't support */
-    case 0xf00: /* TimerITCR */
-    case 0xf04: /* TimerITOP (strictly write only but..) */
-        qemu_log_mask(LOG_UNIMP,
-                      "%s: integration test registers unimplemented\n",
-                      __func__);
-        return 0;
-    }
-
-    qemu_log_mask(LOG_GUEST_ERROR,
-                  "%s: Bad offset %x\n", __func__, (int)offset);
-    return 0;
+    return fake_value_for_test;
 }
 
 static void sp804_write(void *opaque, hwaddr offset,
                         uint64_t value, unsigned size)
 {
-    SP804State *s = (SP804State *)opaque;
-
-    if (offset < 0x20) {
-        arm_timer_write(s->timer[0], offset, value);
-        return;
-    }
-
-    if (offset < 0x40) {
-        arm_timer_write(s->timer[1], offset - 0x20, value);
-        return;
-    }
-
-    /* Technically we could be writing to the Test Registers, but not likely */
-    qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset %x\n",
-                  __func__, (int)offset);
+    fake_value_for_test = value + 32;
 }
 
 static const MemoryRegionOps sp804_ops = {
