@@ -308,6 +308,8 @@ static void versatile_init(MachineState *machine, int board_id)
     sysbus_create_simple("pl061", 0x101e6000, pic[8]);
     sysbus_create_simple("pl061", 0x101e7000, pic[9]);
 
+    sysbus_create_simple("", 0x10030000, pic[18]);
+
     /* The versatile/PB actually has a modified Color LCD controller
        that includes hardware cursor support from the PL111.  */
     dev = sysbus_create_simple("pl110_versatile", 0x10120000, pic[16]);
@@ -367,6 +369,7 @@ static void versatile_init(MachineState *machine, int board_id)
     /*  0x101f3000 UART2.  */
     /* 0x101f4000 SSPI.  */
     /* 0x34000000 NOR Flash */
+    /* 0x10030000 SpiceWire */
 
     dinfo = drive_get(IF_PFLASH, 0, 0);
     if (!pflash_cfi01_register(VERSATILE_FLASH_ADDR, NULL, "versatile.flash",
