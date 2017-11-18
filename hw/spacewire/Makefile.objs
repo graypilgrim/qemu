@@ -1,0 +1,1 @@
+obj-y += arm_sw.o

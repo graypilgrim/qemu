@@ -308,7 +308,7 @@ static void versatile_init(MachineState *machine, int board_id)
     sysbus_create_simple("pl061", 0x101e6000, pic[8]);
     sysbus_create_simple("pl061", 0x101e7000, pic[9]);
 
-    sysbus_create_simple("", 0x10030000, pic[18]);
+    sysbus_create_simple("spacewire", 0x10030000, pic[18]);
 
     /* The versatile/PB actually has a modified Color LCD controller
        that includes hardware cursor support from the PL111.  */
