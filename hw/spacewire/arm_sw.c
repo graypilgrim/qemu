@@ -11,31 +11,66 @@
 #include "hw/sysbus.h"
 #include "qemu/error-report.h"
 
+#define SPW_FIFO_LENGTH 128
+
+#define SPW_TRANSMIT_DESC_HEADER_MASK 0x000000FF
+#define SPW_TRANSMIT_DESC_NONCRC_MASK 0x00000F00
+#define SPW_TRANSMIT_DESC_ENABLE_MASK 0x00001000
+#define SPW_TRANSMIT_DESC_WRAP_MASK 0x00002000
+#define SPW_TRANSMIT_DESC_INTERRUPT_ENABLE_MASK 0x00004000
+#define SPW_TRANSMIT_DESC_LINK_ERROR_MASK 0x00008000
+#define SPW_TRANSMIT_DESC_APPEND_HEADER_CRC_MASK 0x00010000
+#define SPW_TRANSMIT_DESC_APPEND_DATA_CRC_MASK 0x00020000
+#define SPW_TRANSMIT_DESC_CRC_TYPE_MASK 0x000C0000
+#define SPW_TRANSMIT_DESC_RESERVED 0xFFF00000
+
 #define TYPE_SPACEWIRE "spacewire"
 #define SPACEWIRE(obj) OBJECT_CHECK(SpaceWireState, (obj), TYPE_SPACEWIRE)
 
 typedef struct SpaceWireState {
     SysBusDevice parent_obj;
-
     MemoryRegion iomem;
     int level[2];
     qemu_irq irq;
 } SpaceWireState;
 
-static uint64_t fake_val;
+typedef struct _SpWRegisters {
+    volatile uint32_t control;
+    volatile uint32_t status;
+    volatile uint32_t defaultAddress;
+    volatile uint32_t clockDivisor;
+    volatile uint32_t destinationKey;
+    volatile uint32_t timeCode;
+    volatile uint32_t reserved[2];
+    volatile uint32_t dmaControl;
+    volatile uint32_t dmaRxMaxLength;
+    volatile uint32_t dmaTransmitDescriptorAddress;
+    volatile uint32_t dmaReceiveDescriptorAddress;
+    volatile uint32_t dmaAddress;
+} SpWRegisters;
+
+typedef struct {
+    volatile uint32_t word0;
+    volatile uint32_t word1;
+    volatile uint32_t word2;
+    volatile uint32_t word3;
+} SpWTransmitDescriptor;
+
+static SpWTransmitDescriptor *descriptor_list_head;
 
 static uint64_t space_wire_read(void *opaque, hwaddr offset,
                            unsigned size)
 {
     error_report("read");
-    return fake_val;
+    return (uint64_t)descriptor_list_head;
 }
 
 static void space_wire_write(void *opaque, hwaddr offset,
                         uint64_t value, unsigned size)
 {
     error_report("write");
-    fake_val = value + 32;
+    SpWTransmitDescriptor *ptr = (SpWTransmitDescriptor *)value;
+    descriptor_list_head = ptr;
 }
 
 static const MemoryRegionOps space_wire_ops = {
