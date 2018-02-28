@@ -42,30 +42,30 @@ typedef struct SpaceWireState {
 } SpaceWireState;
 
 typedef struct _SpWRegisters {
-    volatile uint32_t control;
-    volatile uint32_t status;
-    volatile uint32_t defaultAddress;
-    volatile uint32_t clockDivisor;
-    volatile uint32_t destinationKey;
-    volatile uint32_t timeCode;
-    volatile uint32_t reserved[2];
-    volatile uint32_t dmaControl;
-    volatile uint32_t dmaRxMaxLength;
-    volatile uint32_t dmaTransmitDescriptorAddress;
-    volatile uint32_t dmaReceiveDescriptorAddress;
-    volatile uint32_t dmaAddress;
+    uint32_t control;
+    uint32_t status;
+    uint32_t defaultAddress;
+    uint32_t clockDivisor;
+    uint32_t destinationKey;
+    uint32_t timeCode;
+    uint32_t reserved[2];
+    uint32_t dmaControl;
+    uint32_t dmaRxMaxLength;
+    uint32_t dmaTransmitDescriptorAddress;
+    uint32_t dmaReceiveDescriptorAddress;
+    uint32_t dmaAddress;
 } SpWRegisters;
 
 SpWRegisters registers;
 
 typedef struct {
-    volatile uint32_t word0;
-    volatile uint32_t word1;
-    volatile uint32_t word2;
-    volatile uint32_t word3;
+    uint32_t word0;
+    uint32_t word1;
+    uint32_t word2;
+    uint32_t word3;
 } SpWTransmitDescriptor;
 
-static SpWTransmitDescriptor *descriptor_list_head;
+static SpWTransmitDescriptor descriptor_list_head;
 
 unsigned char calculate_crc(unsigned char *data, unsigned int len)
 {
@@ -105,16 +105,28 @@ unsigned char* create_rmap_packet(SpWTransmitDescriptor *descriptor)
 static uint64_t space_wire_read(void *opaque, hwaddr offset,
                            unsigned size)
 {
-    error_report("read");
-    return (uint64_t)descriptor_list_head;
+    error_report("read: %p", descriptor_list_head);
+    // return (uint64_t)descriptor_list_head;
+    return 1;
 }
 
 static void space_wire_write(void *opaque, hwaddr offset,
                         uint64_t value, unsigned size)
 {
+    SpaceWireState *state = opaque;
+    SpWTransmitDescriptor ptr;
+    cpu_physical_memory_read(value, &ptr, sizeof(SpWTransmitDescriptor));
     error_report("write");
-    SpWTransmitDescriptor *ptr = (SpWTransmitDescriptor *)value;
-    descriptor_list_head = ptr;
+    error_report("state: %p", state);
+    error_report("offset: %lu", offset);
+    error_report("value: %lu", value);
+    error_report("size: %u", size);
+    error_report("crc: %d", calculate_crc(NULL, 0));
+
+    error_report("word0 = %u", ptr.word0);
+    error_report("word1 = %u", ptr.word1);
+    error_report("word2 = %u", ptr.word2);
+    error_report("word3 = %u", ptr.word3);
 }
 
 static const MemoryRegionOps space_wire_ops = {
