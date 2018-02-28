@@ -10,6 +10,9 @@
 #include "qemu/osdep.h"
 #include "hw/sysbus.h"
 #include "qemu/error-report.h"
+#include "io/channel.h"
+#include "io/channel-file.h"
+#include "qapi/error.h"
 
 #include <time.h>
 
@@ -94,12 +97,31 @@ unsigned char* create_rmap_packet(SpWTransmitDescriptor *descriptor)
   packet[13] = (data_len & 0x000000FF00) >> 8;
   packet[14] = data_len & 0x00000000FF;
   packet[15] = calculate_crc(packet, 10);
-  unsigned char *data_ptr = (unsigned char *)descriptor->word3;
-  memcpy(packet + 16, data_ptr, data_len);
-  packet[16 + data_len] = calculate_crc(data_ptr, data_len);
-  packet[16 + data_len + 1] = RMAP_EOP;
+  // unsigned char *data_ptr = (unsigned char *)descriptor->word3;
+  // memcpy(packet + 16, data_ptr, data_len);
+  // packet[16 + data_len] = calculate_crc(data_ptr, data_len);
+  // packet[16 + data_len + 1] = RMAP_EOP;
 
   return packet;
+}
+
+static void write_package_to_io_channel_file(unsigned char* buf, size_t len)
+{
+    const char* spw_file_name = "space-wire-tests/4fce092336_space_wire.txt";
+    QIOChannel *dst;
+
+    dst = QIO_CHANNEL(qio_channel_file_new_path(
+                          spw_file_name,
+                          O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644,
+                          &error_abort));
+    error_report("dst io channel: %s", dst ? "acquired" : "nope");
+
+    struct iovec iov = { .iov_base = buf,
+                         .iov_len = len };
+
+    ssize_t res = qio_channel_writev(dst, &iov, 1, &error_abort);
+
+    error_report("saved characters: %lu", res);
 }
 
 static uint64_t space_wire_read(void *opaque, hwaddr offset,
@@ -121,12 +143,14 @@ static void space_wire_write(void *opaque, hwaddr offset,
     error_report("offset: %lu", offset);
     error_report("value: %lu", value);
     error_report("size: %u", size);
-    error_report("crc: %d", calculate_crc(NULL, 0));
 
     error_report("word0 = %u", ptr.word0);
     error_report("word1 = %u", ptr.word1);
     error_report("word2 = %u", ptr.word2);
     error_report("word3 = %u", ptr.word3);
+
+    unsigned char *buf = create_rmap_packet(&ptr);
+    write_package_to_io_channel_file(&buf, 10);
 }
 
 static const MemoryRegionOps space_wire_ops = {
