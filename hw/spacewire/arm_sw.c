@@ -12,6 +12,7 @@
 #include "qemu/error-report.h"
 #include "io/channel.h"
 #include "io/channel-file.h"
+#include "io/channel-socket.h"
 #include "qapi/error.h"
 
 #include <time.h>
@@ -164,6 +165,39 @@ static void write_package_to_io_channel_file(unsigned char* buf, size_t len)
     error_report("saved characters: %lu", res);
 }
 
+static SocketAddress *build_socket_address(const char *bindto, const char *port) {
+    SocketAddress *saddr;
+
+    saddr = g_new0(SocketAddress, 1);
+
+    InetSocketAddress *inet;
+    saddr->type = SOCKET_ADDRESS_KIND_INET;
+    inet = saddr->u.inet.data = g_new0(InetSocketAddress, 1);
+    inet->host = g_strdup(bindto);
+    inet->port = g_strdup(port);
+
+    return saddr;
+}
+
+static void write_to_io_channel_socket(void)
+{
+  QIOChannel *dst = QIO_CHANNEL(qio_channel_socket_new());
+  error_report("socket created");
+
+  SocketAddress *connect_addr = build_socket_address("127.0.0.1", "1984");
+
+  int connection = qio_channel_socket_connect_sync(QIO_CHANNEL_SOCKET(dst), connect_addr, &error_abort);
+  if (connection == -1)
+    error_report("connection error");
+
+  char buf[] = "Wizard is never late";
+  struct iovec iov = { .iov_base = buf,
+                       .iov_len = 20 };
+
+  ssize_t res = qio_channel_writev(dst, &iov, 1, &error_abort);
+  error_report("send characters: %lu", res);
+}
+
 static uint64_t space_wire_read(void *opaque, hwaddr offset,
                            unsigned size)
 {
@@ -179,20 +213,21 @@ static void space_wire_write(void *opaque, hwaddr offset,
     SpWTransmitDescriptor ptr;
     cpu_physical_memory_read(value, &ptr, sizeof(SpWTransmitDescriptor));
     error_report("write");
-    error_report("state: %p", state);
-    error_report("offset: %lu", offset);
-    error_report("value: %lu", value);
-    error_report("size: %u", size);
+    // error_report("state: %p", state);
+    // error_report("offset: %lu", offset);
+    // error_report("value: %lu", value);
+    // error_report("size: %u", size);
+    //
+    // error_report("word0 = %u", ptr.word0);
+    // error_report("word1 = %u", ptr.word1);
+    // error_report("word2 = %u", ptr.word2);
+    // error_report("word3 = %u", ptr.word3);
+    //
+    // unsigned char *buf = create_rmap_packet(&ptr);
+    // error_report("crc = %u", buf[15]);
 
-    error_report("word0 = %u", ptr.word0);
-    error_report("word1 = %u", ptr.word1);
-    error_report("word2 = %u", ptr.word2);
-    error_report("word3 = %u", ptr.word3);
-
-    unsigned char *buf = create_rmap_packet(&ptr);
-    error_report("crc = %u", buf[15]);
-
-    write_package_to_io_channel_file(&buf, 10);
+    // write_package_to_io_channel_file(&buf, 10);
+    write_to_io_channel_socket();
 }
 
 static const MemoryRegionOps space_wire_ops = {
