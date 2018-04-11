@@ -115,6 +115,16 @@ static void machine_set_kernel(Object *obj, const char *value, Error **errp)
     ms->kernel_filename = g_strdup(value);
 }
 
+static char *machine_get_spw_port(Object *obj, Error **errp)
+{
+    return NULL;
+}
+
+static void machine_set_spw_port(Object *obj, const char *value, Error **errp)
+{
+
+}
+
 static char *machine_get_initrd(Object *obj, Error **errp)
 {
     MachineState *ms = MACHINE(obj);
@@ -422,6 +432,11 @@ static void machine_class_init(ObjectClass *oc, void *data)
         machine_get_kernel, machine_set_kernel, &error_abort);
     object_class_property_set_description(oc, "kernel",
         "Linux kernel image file", &error_abort);
+
+    object_class_property_add_str(oc, "spw-port",
+        machine_get_spw_port, machine_set_spw_port, &error_abort);
+    object_class_property_set_description(oc, "spw-port",
+        "Test purposes", &error_abort);
 
     object_class_property_add_str(oc, "initrd",
         machine_get_initrd, machine_set_initrd, &error_abort);

@@ -14,6 +14,7 @@
 #include "io/channel-file.h"
 #include "io/channel-socket.h"
 #include "qapi/error.h"
+#include "sysemu/sysemu.h"
 
 #include <time.h>
 
@@ -211,8 +212,8 @@ static void space_wire_write(void *opaque, hwaddr offset,
 {
     SpaceWireState *state = opaque;
     SpWTransmitDescriptor ptr;
-    cpu_physical_memory_read(value, &ptr, sizeof(SpWTransmitDescriptor));
-    error_report("write");
+    // cpu_physical_memory_read(value, &ptr, sizeof(SpWTransmitDescriptor));
+    error_report("write : %lu", value);
     // error_report("state: %p", state);
     // error_report("offset: %lu", offset);
     // error_report("value: %lu", value);
@@ -227,7 +228,21 @@ static void space_wire_write(void *opaque, hwaddr offset,
     // error_report("crc = %u", buf[15]);
 
     // write_package_to_io_channel_file(&buf, 10);
-    write_to_io_channel_socket();
+    // write_to_io_channel_socket();
+
+    QemuOpts *machine_opts = qemu_get_machine_opts();
+    const char *port = qemu_opt_get(machine_opts, "spw-port");
+    error_report("port inside spw : %s", port);
+
+    qemu_set_irq(state->irq, value);
+}
+
+static void spacewire_set_irq(void *opaque, int irq, int level)
+{
+    error_report(">>>  %s", __FUNCTION__);
+    SpaceWireState *s = (SpaceWireState *)opaque;
+
+    qemu_set_irq(s->irq, 1);
 }
 
 static const MemoryRegionOps space_wire_ops = {
@@ -251,10 +266,11 @@ static void space_wire_init(Object *obj)
     SpaceWireState *s = SPACEWIRE(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
-    sysbus_init_irq(sbd, &s->irq);
     memory_region_init_io(&s->iomem, obj, &space_wire_ops, s,
                           "spacewire", 0x1000);
     sysbus_init_mmio(sbd, &s->iomem);
+    sysbus_init_irq(sbd, &s->irq);
+    s->irq = qemu_allocate_irq(spacewire_set_irq, s, 0);
 }
 
 static void space_wire_class_init(ObjectClass *klass, void *data)

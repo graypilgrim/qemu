@@ -227,8 +227,8 @@ Set default value of @var{driver}'s property @var{prop} to @var{value}, e.g.:
 qemu-system-i386 -global ide-drive.physical_block_size=4096 -drive file=file,if=ide,index=0,media=disk
 @end example
 
-In particular, you can use this to set driver properties for devices which are 
-created automatically by the machine model. To create a device which is not 
+In particular, you can use this to set driver properties for devices which are
+created automatically by the machine model. To create a device which is not
 created automatically and set properties on it, use -@option{device}.
 
 -global @var{driver}.@var{prop}=@var{value} is shorthand for -global
@@ -2931,6 +2931,14 @@ STEXI
 @findex -kernel
 Use @var{bzImage} as kernel image. The kernel can be either a Linux kernel
 or in multiboot format.
+ETEXI
+
+DEF("spw-port", HAS_ARG, QEMU_OPTION_space_wire_port, \
+    "-spw-port port use 'port' as client space wire port\n", QEMU_ARCH_ALL)
+STEXI
+@item -spw-port @var{port}
+@findex -spw-port
+Port for test purposes.
 ETEXI
 
 DEF("append", HAS_ARG, QEMU_OPTION_append, \

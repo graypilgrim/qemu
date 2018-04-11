@@ -26,6 +26,7 @@
 #include "qemu-common.h"
 #include "hw/irq.h"
 #include "qom/object.h"
+#include "qemu/error-report.h"
 
 #define IRQ(obj) OBJECT_CHECK(struct IRQState, (obj), TYPE_IRQ)
 
@@ -43,6 +44,8 @@ void qemu_set_irq(qemu_irq irq, int level)
         return;
 
     irq->handler(irq->opaque, irq->n, level);
+    if (irq->n == 18)
+      error_report(">>> qemu_set_irq | irq: %d, level: %d", irq->n, level);
 }
 
 qemu_irq *qemu_extend_irqs(qemu_irq *old, int n_old, qemu_irq_handler handler,
