@@ -17,13 +17,15 @@
 #include "sysemu/sysemu.h"
 
 #include <time.h>
+#include "qemu/thread.h"
 
 #define SPW_FIFO_LENGTH 64
-#define RMAP_CONST_PACKET_LEN 18
+#define RMAP_CONST_PACKAGE_LEN 18
 #define RMAP_PROTOCOL_IDENTIFIER 0x01
-#define RMAP_PACKET_TYPE_COMMAND 0x40
-#define RMAP_PACKET_WRITE_COMMAND 0x20
+#define RMAP_package_TYPE_COMMAND 0x40
+#define RMAP_package_WRITE_COMMAND 0x20
 #define RMAP_EOP 0
+#define RMAP_MAX_PACKAGE_LEN 16777215
 
 #define SPW_TRANSMIT_DESC_HEADER_MASK 0x000000FF
 #define SPW_TRANSMIT_DESC_NONCRC_MASK 0x00000F00
@@ -39,6 +41,10 @@
 #define TYPE_SPACEWIRE "spacewire"
 #define SPACEWIRE(obj) OBJECT_CHECK(SpaceWireState, (obj), TYPE_SPACEWIRE)
 
+static QIOChannel *io_channel = NULL;
+static QemuThread socket_read_thread;
+static QemuThread main_loop_thread;
+
 typedef struct SpaceWireState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
@@ -46,20 +52,40 @@ typedef struct SpaceWireState {
     qemu_irq irq;
 } SpaceWireState;
 
+// typedef struct _SpWRegisters {
+//     uint32_t control;
+//     uint32_t status;
+//     uint32_t defaultAddress;
+//     uint32_t clockDivisor;
+//     uint32_t destinationKey;
+//     uint32_t timeCode;
+//     uint32_t reserved[2];
+//     uint32_t dmaControl;
+//     uint32_t dmaRxMaxLength;
+//     uint32_t dmaTransmitDescriptorAddress;
+//     uint32_t dmaReceiveDescriptorAddress;
+//     uint32_t dmaAddress;
+// } SpWRegisters;
+
 typedef struct _SpWRegisters {
-    uint32_t control;
-    uint32_t status;
-    uint32_t defaultAddress;
-    uint32_t clockDivisor;
-    uint32_t destinationKey;
-    uint32_t timeCode;
-    uint32_t reserved[2];
-    uint32_t dmaControl;
-    uint32_t dmaRxMaxLength;
-    uint32_t dmaTransmitDescriptorAddress;
-    uint32_t dmaReceiveDescriptorAddress;
-    uint32_t dmaAddress;
+    uint32_t trnsDescIndex;
+    uint32_t rcvDescIndex;
 } SpWRegisters;
+SpWRegisters registers;
+
+#define DESCRIPTOR_TABLE_LEN 16
+
+#define RCV_DESCRIPTOR_WRAP_MASK (0x1 << 26)
+#define RCV_DESCRIPTOR_ENABLE_MASK (0x1 << 25)
+
+typedef struct {
+    uint32_t word0;
+    uint32_t word1;
+} SpWReceiveDescriptor;
+static SpWReceiveDescriptor receiveDescTable[DESCRIPTOR_TABLE_LEN];
+
+#define TRNS_DESCRIPTOR_WRAP_MASK (0x1 << 13)
+#define TRNS_DESCRIPTOR_ENABLE_MASK (0x1 << 12)
 
 typedef struct {
     uint32_t word0;
@@ -67,6 +93,7 @@ typedef struct {
     uint32_t word2;
     uint32_t word3;
 } SpWTransmitDescriptor;
+static SpWTransmitDescriptor transmitDescTable[DESCRIPTOR_TABLE_LEN];
 
 unsigned char RMAP_CRCTable[] = {
   0x00, 0x91, 0xe3, 0x72, 0x07, 0x96, 0xe4, 0x75,
@@ -103,9 +130,6 @@ unsigned char RMAP_CRCTable[] = {
   0xba, 0x2b, 0x59, 0xc8, 0xbd, 0x2c, 0x5e, 0xcf,
 };
 
-SpWRegisters registers;
-static SpWTransmitDescriptor descriptor_list_head;
-
 unsigned char calculate_crc(unsigned char *data, unsigned int len)
 {
   unsigned char crc = 0;
@@ -117,54 +141,57 @@ unsigned char calculate_crc(unsigned char *data, unsigned int len)
   return crc;
 }
 
-unsigned char* create_rmap_packet(SpWTransmitDescriptor *descriptor)
+int create_rmap_package(SpWTransmitDescriptor *descriptor, char** package)
 {
   unsigned data_len = descriptor->word2 & SPW_TRANSMIT_DESC_DATA_LEN_MASK;
-  unsigned char* packet = (unsigned char*)calloc(1, sizeof(RMAP_CONST_PACKET_LEN + data_len));
+  error_report("%s: package: %p", __FUNCTION__, *package);
+  *package = (unsigned char*)malloc(RMAP_CONST_PACKAGE_LEN);
+  error_report("%s: package: %p", __FUNCTION__, *package);
 
-  // packet[0] Destination logical address
-  packet[1] = RMAP_PROTOCOL_IDENTIFIER;
-  packet[2] |= RMAP_PACKET_TYPE_COMMAND;
-  packet[2] |= RMAP_PACKET_WRITE_COMMAND;
-  packet[3] = registers.destinationKey;
-  // packet[4] Same logical dmaAddress
 
-  srand(time(NULL));
+  // (*package)[0] Destination logical address
+  (*package)[1] = RMAP_PROTOCOL_IDENTIFIER;
+  (*package)[2] |= RMAP_package_TYPE_COMMAND;
+  (*package)[2] |= RMAP_package_WRITE_COMMAND;
+  // (*package)[3] = registers.destinationKey;
+  // (*package)[4] Same logical dmaAddress
+
+  // srand(time(NULL));
   int transaction_identifier = rand() & 0x0000FFFF;
-  packet[5] = (transaction_identifier & 0x0000FF00) >> 8;
-  packet[6] = transaction_identifier & 0x000000FF;
-  // packet[7] Extended write dmaAddress
-  // packet[8] .. packet[11] write address
-  packet[12] = (data_len & 0x0000FF0000) >> 16;
-  packet[13] = (data_len & 0x000000FF00) >> 8;
-  packet[14] = data_len & 0x00000000FF;
-  packet[15] = calculate_crc(packet, 10);
+  (*package)[5] = (transaction_identifier & 0x0000FF00) >> 8;
+  (*package)[6] = transaction_identifier & 0x000000FF;
+  // (*package)[7] Extended write dmaAddress
+  // (*package)[8] .. (*package)[11] write address
+  // (*package)[12] = (data_len & 0x0000FF0000) >> 16;
+  // (*package)[13] = (data_len & 0x000000FF00) >> 8;
+  // (*package)[14] = data_len & 0x00000000FF;
+  (*package)[15] = calculate_crc(*package, 10);
   // unsigned char *data_ptr = (unsigned char *)descriptor->word3;
-  // memcpy(packet + 16, data_ptr, data_len);
-  // packet[16 + data_len] = calculate_crc(data_ptr, data_len);
-  // packet[16 + data_len + 1] = RMAP_EOP;
+  // memcpy(package + 16, data_ptr, data_len);
+  // (*package)[16 + data_len] = calculate_crc(data_ptr, data_len);
+  (*package)[16 + data_len + 1] = RMAP_EOP;
 
-  return packet;
+  return RMAP_CONST_PACKAGE_LEN + data_len;
 }
 
-static void write_package_to_io_channel_file(unsigned char* buf, size_t len)
-{
-    const char* spw_file_name = "space-wire-tests/4fce092336_space_wire.txt";
-    QIOChannel *dst;
-
-    dst = QIO_CHANNEL(qio_channel_file_new_path(
-                          spw_file_name,
-                          O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644,
-                          &error_abort));
-    error_report("dst io channel: %s", dst ? "acquired" : "nope");
-
-    struct iovec iov = { .iov_base = buf,
-                         .iov_len = len };
-
-    ssize_t res = qio_channel_writev(dst, &iov, 1, &error_abort);
-
-    error_report("saved characters: %lu", res);
-}
+// static void write_package_to_io_channel_file(unsigned char* buf, size_t len)
+// {
+//     const char* spw_file_name = "space-wire-tests/4fce092336_space_wire.txt";
+//     QIOChannel *dst;
+//
+//     dst = QIO_CHANNEL(qio_channel_file_new_path(
+//                           spw_file_name,
+//                           O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644,
+//                           &error_abort));
+//     error_report("dst io channel: %s", dst ? "acquired" : "nope");
+//
+//     struct iovec iov = { .iov_base = buf,
+//                          .iov_len = len };
+//
+//     ssize_t res = qio_channel_writev(dst, &iov, 1, &error_abort);
+//
+//     error_report("saved characters: %lu", res);
+// }
 
 static SocketAddress *build_socket_address(const char *bindto, const char *port) {
     SocketAddress *saddr;
@@ -180,40 +207,111 @@ static SocketAddress *build_socket_address(const char *bindto, const char *port)
     return saddr;
 }
 
-static void write_to_io_channel_socket(void)
+static void connect_to_io_socket(void)
 {
-  QIOChannel *dst = QIO_CHANNEL(qio_channel_socket_new());
+  QemuOpts *machine_opts = qemu_get_machine_opts();
+  const char *port = qemu_opt_get(machine_opts, "spw-port");
+  error_report("port inside spw : %s", port);
+
+  io_channel = QIO_CHANNEL(qio_channel_socket_new());
   error_report("socket created");
 
-  SocketAddress *connect_addr = build_socket_address("127.0.0.1", "1984");
+  SocketAddress *connect_addr = build_socket_address("127.0.0.1", port);
 
-  int connection = qio_channel_socket_connect_sync(QIO_CHANNEL_SOCKET(dst), connect_addr, &error_abort);
+  int connection = qio_channel_socket_connect_sync(QIO_CHANNEL_SOCKET(io_channel), connect_addr, &error_abort);
   if (connection == -1)
     error_report("connection error");
+}
 
-  char buf[] = "Wizard is never late";
-  struct iovec iov = { .iov_base = buf,
-                       .iov_len = 20 };
-
-  ssize_t res = qio_channel_writev(dst, &iov, 1, &error_abort);
+static void write_to_io_channel_socket(char* buf, int len)
+{
+  ssize_t res = qio_channel_write(io_channel, buf, len, &error_abort);
   error_report("send characters: %lu", res);
+  // error_report("send");
 }
 
 static uint64_t space_wire_read(void *opaque, hwaddr offset,
                            unsigned size)
 {
-    error_report("read: %p", descriptor_list_head);
-    // return (uint64_t)descriptor_list_head;
-    return 1;
+    SpaceWireState *state = opaque;
+    error_report("read:");
+    qemu_set_irq(state->irq, 0);
+    return 0;
+}
+
+void *read_from_socket(void *arg)
+{
+  error_report("read_from_socket()");
+  while (1) {
+    char buf[30] = "";
+    int read_chars = qio_channel_read(io_channel, buf, 20, &error_abort);
+    error_report("~~~~~~~~~~~~~~~~ read");
+
+    if (read_chars < 0) {
+      error_report("Reading from socket failed");
+      break;
+    }
+
+    if (read_chars == 0) {
+      error_report("Server disconnected");
+      break;
+    }
+
+    error_report("Message received");
+  }
+
+  error_report("read_from_socket() end");
+
+  return NULL;
+}
+
+void* main_loop(void* arg)
+{
+  while (1) {
+    if (!(transmitDescTable[registers.trnsDescIndex].word0 & TRNS_DESCRIPTOR_ENABLE_MASK))
+      break;
+
+    unsigned char* package = NULL;
+    int package_size = create_rmap_package(&transmitDescTable[registers.trnsDescIndex], &package);
+
+    write_to_io_channel_socket(package, package_size);
+    transmitDescTable[registers.trnsDescIndex].word0 &= ~TRNS_DESCRIPTOR_ENABLE_MASK;
+    registers.trnsDescIndex = (registers.trnsDescIndex + 1) % DESCRIPTOR_TABLE_LEN;
+  }
+
+  return NULL;
 }
 
 static void space_wire_write(void *opaque, hwaddr offset,
                         uint64_t value, unsigned size)
 {
     SpaceWireState *state = opaque;
-    SpWTransmitDescriptor ptr;
+
+    switch (offset) {
+      case 0x4:
+      {
+        error_report("rcv, len: %ld", sizeof(receiveDescTable) * DESCRIPTOR_TABLE_LEN);
+        cpu_physical_memory_read(value, &receiveDescTable, sizeof(receiveDescTable));
+        error_report("rcv2");
+        registers.rcvDescIndex = 0;
+
+        break;
+      }
+
+      case 0x8:
+      {
+        error_report("trns");
+        cpu_physical_memory_read(value, &transmitDescTable, sizeof(transmitDescTable));
+        registers.trnsDescIndex = 0;
+        qemu_thread_create(&main_loop_thread, NULL, main_loop, NULL, QEMU_THREAD_DETACHED);
+
+        break;
+      }
+    }
+
+    // SpWTransmitDescriptor ptr;
     // cpu_physical_memory_read(value, &ptr, sizeof(SpWTransmitDescriptor));
-    error_report("write : %lu", value);
+    // error_report("write : %lu", value);
     // error_report("state: %p", state);
     // error_report("offset: %lu", offset);
     // error_report("value: %lu", value);
@@ -224,17 +322,12 @@ static void space_wire_write(void *opaque, hwaddr offset,
     // error_report("word2 = %u", ptr.word2);
     // error_report("word3 = %u", ptr.word3);
     //
-    // unsigned char *buf = create_rmap_packet(&ptr);
+    // unsigned char *buf = create_rmap_package(&ptr);
     // error_report("crc = %u", buf[15]);
 
-    // write_package_to_io_channel_file(&buf, 10);
     // write_to_io_channel_socket();
 
-    QemuOpts *machine_opts = qemu_get_machine_opts();
-    const char *port = qemu_opt_get(machine_opts, "spw-port");
-    error_report("port inside spw : %s", port);
-
-    qemu_set_irq(state->irq, value);
+    // qemu_set_irq(state->irq, 1);
 }
 
 static void spacewire_set_irq(void *opaque, int irq, int level)
@@ -271,6 +364,9 @@ static void space_wire_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
     s->irq = qemu_allocate_irq(spacewire_set_irq, s, 0);
+
+    connect_to_io_socket();
+    qemu_thread_create(&socket_read_thread, NULL, read_from_socket, NULL, QEMU_THREAD_DETACHED);
 }
 
 static void space_wire_class_init(ObjectClass *klass, void *data)
