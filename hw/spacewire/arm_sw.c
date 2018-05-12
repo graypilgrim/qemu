@@ -19,15 +19,8 @@
 #include <time.h>
 #include "qemu/thread.h"
 
-#define SPW_FIFO_LENGTH 64
-#define RMAP_CONST_PACKAGE_LEN 18
-#define RMAP_PROTOCOL_IDENTIFIER 0x01
-#define RMAP_package_TYPE_COMMAND 0x40
-#define RMAP_package_WRITE_COMMAND 0x20
-#define RMAP_EOP 0
-#define RMAP_MAX_PACKAGE_LEN 16777215
-
 #define SPW_TRANSMIT_DESC_HEADER_MASK 0x000000FF
+#define SPW_TRANSMIT_MIN_HEADER_LEN 15
 #define SPW_TRANSMIT_DESC_NONCRC_MASK 0x00000F00
 #define SPW_TRANSMIT_DESC_ENABLE_MASK 0x00001000
 #define SPW_TRANSMIT_DESC_WRAP_MASK 0x00002000
@@ -37,6 +30,14 @@
 #define SPW_TRANSMIT_DESC_APPEND_DATA_CRC_MASK 0x00020000
 #define SPW_TRANSMIT_DESC_CRC_TYPE_MASK 0x000C0000
 #define SPW_TRANSMIT_DESC_DATA_LEN_MASK 0x00FFFFFF
+
+#define SPW_FIFO_LENGTH 64
+#define RMAP_MIN_PACKAGE_LEN (SPW_TRANSMIT_MIN_HEADER_LEN + 1)
+#define RMAP_PROTOCOL_IDENTIFIER 0x01
+#define RMAP_package_TYPE_COMMAND 0x40
+#define RMAP_package_WRITE_COMMAND 0x20
+#define RMAP_EOP 0
+#define RMAP_MAX_PACKAGE_LEN 16777215
 
 #define TYPE_SPACEWIRE "spacewire"
 #define SPACEWIRE(obj) OBJECT_CHECK(SpaceWireState, (obj), TYPE_SPACEWIRE)
@@ -141,57 +142,33 @@ unsigned char calculate_crc(unsigned char *data, unsigned int len)
   return crc;
 }
 
+//Logical addressing
 int create_rmap_package(SpWTransmitDescriptor *descriptor, char** package)
 {
+  unsigned header_len = descriptor->word0 & SPW_TRANSMIT_DESC_HEADER_MASK;
+  if (header_len < SPW_TRANSMIT_MIN_HEADER_LEN) {
+    error_report("Invalid header len");
+    return -1;
+  }
   unsigned data_len = descriptor->word2 & SPW_TRANSMIT_DESC_DATA_LEN_MASK;
-  error_report("%s: package: %p", __FUNCTION__, *package);
-  *package = (unsigned char*)malloc(RMAP_CONST_PACKAGE_LEN);
-  error_report("%s: package: %p", __FUNCTION__, *package);
 
+  *package = (unsigned char*)malloc(RMAP_MIN_PACKAGE_LEN + data_len);
 
-  // (*package)[0] Destination logical address
-  (*package)[1] = RMAP_PROTOCOL_IDENTIFIER;
-  (*package)[2] |= RMAP_package_TYPE_COMMAND;
-  (*package)[2] |= RMAP_package_WRITE_COMMAND;
-  // (*package)[3] = registers.destinationKey;
-  // (*package)[4] Same logical dmaAddress
+  cpu_physical_memory_read(descriptor->word1, *package, header_len);
+  unsigned char header_crc = calculate_crc(*package, header_len);
+  *package += header_len;
+  (**package) = header_crc;
+  ++(*package);
 
-  // srand(time(NULL));
-  int transaction_identifier = rand() & 0x0000FFFF;
-  (*package)[5] = (transaction_identifier & 0x0000FF00) >> 8;
-  (*package)[6] = transaction_identifier & 0x000000FF;
-  // (*package)[7] Extended write dmaAddress
-  // (*package)[8] .. (*package)[11] write address
-  // (*package)[12] = (data_len & 0x0000FF0000) >> 16;
-  // (*package)[13] = (data_len & 0x000000FF00) >> 8;
-  // (*package)[14] = data_len & 0x00000000FF;
-  (*package)[15] = calculate_crc(*package, 10);
-  // unsigned char *data_ptr = (unsigned char *)descriptor->word3;
-  // memcpy(package + 16, data_ptr, data_len);
-  // (*package)[16 + data_len] = calculate_crc(data_ptr, data_len);
-  (*package)[16 + data_len + 1] = RMAP_EOP;
+  cpu_physical_memory_read(descriptor->word3, *package, data_len);
+  unsigned char data_crc = calculate_crc(*package, data_len);
+  *package += data_len;
+  (**package) = data_crc;
+  ++(*package);
+  (**package) = RMAP_EOP;
 
-  return RMAP_CONST_PACKAGE_LEN + data_len;
+  return RMAP_MIN_PACKAGE_LEN + data_len;
 }
-
-// static void write_package_to_io_channel_file(unsigned char* buf, size_t len)
-// {
-//     const char* spw_file_name = "space-wire-tests/4fce092336_space_wire.txt";
-//     QIOChannel *dst;
-//
-//     dst = QIO_CHANNEL(qio_channel_file_new_path(
-//                           spw_file_name,
-//                           O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644,
-//                           &error_abort));
-//     error_report("dst io channel: %s", dst ? "acquired" : "nope");
-//
-//     struct iovec iov = { .iov_base = buf,
-//                          .iov_len = len };
-//
-//     ssize_t res = qio_channel_writev(dst, &iov, 1, &error_abort);
-//
-//     error_report("saved characters: %lu", res);
-// }
 
 static SocketAddress *build_socket_address(const char *bindto, const char *port) {
     SocketAddress *saddr;
