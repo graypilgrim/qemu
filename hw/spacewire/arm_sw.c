@@ -85,6 +85,8 @@ typedef struct {
 } SpWReceiveDescriptor;
 static SpWReceiveDescriptor receiveDescTable[DESCRIPTOR_TABLE_LEN];
 
+static uint8_t RMAPHeader[256];
+
 #define TRNS_DESCRIPTOR_WRAP_MASK (0x1 << 13)
 #define TRNS_DESCRIPTOR_ENABLE_MASK (0x1 << 12)
 
@@ -143,7 +145,7 @@ unsigned char calculate_crc(unsigned char *data, unsigned int len)
 }
 
 //Logical addressing
-int create_rmap_package(SpWTransmitDescriptor *descriptor, char** package)
+int create_rmap_package(SpWTransmitDescriptor *descriptor, unsigned char** package)
 {
   unsigned header_len = descriptor->word0 & SPW_TRANSMIT_DESC_HEADER_MASK;
   if (header_len < SPW_TRANSMIT_MIN_HEADER_LEN) {
@@ -151,35 +153,42 @@ int create_rmap_package(SpWTransmitDescriptor *descriptor, char** package)
     return -1;
   }
   unsigned data_len = descriptor->word2 & SPW_TRANSMIT_DESC_DATA_LEN_MASK;
+  unsigned tail = (data_len > 0) ? 2 : 1;
+  unsigned char* res = (unsigned char*)malloc(RMAP_MIN_PACKAGE_LEN + data_len + tail);
+  *package = res;
 
-  *package = (unsigned char*)malloc(RMAP_MIN_PACKAGE_LEN + data_len);
+  cpu_physical_memory_read(descriptor->word1, res, header_len);
+  for (int i = 0; i < RMAP_MIN_PACKAGE_LEN; ++i)
+    error_report("~~~ %x", res[i]);
+  error_report("~~~~~~~~~~~~~~~");
 
-  cpu_physical_memory_read(descriptor->word1, *package, header_len);
-  unsigned char header_crc = calculate_crc(*package, header_len);
-  *package += header_len;
-  (**package) = header_crc;
-  ++(*package);
+  unsigned char header_crc = calculate_crc(res, header_len);
+  res += header_len;
+  *res = header_crc;
+  ++res;
 
-  cpu_physical_memory_read(descriptor->word3, *package, data_len);
-  unsigned char data_crc = calculate_crc(*package, data_len);
-  *package += data_len;
-  (**package) = data_crc;
-  ++(*package);
-  (**package) = RMAP_EOP;
+  if (data_len > 0) {
+    unsigned char data_crc = calculate_crc(res, data_len);
+    res += data_len;
+    *res = data_crc;
+  }
 
-  return RMAP_MIN_PACKAGE_LEN + data_len;
+  ++res;
+  *res = RMAP_EOP;
+
+  return RMAP_MIN_PACKAGE_LEN + data_len + tail;
 }
 
 static SocketAddress *build_socket_address(const char *bindto, const char *port) {
     SocketAddress *saddr;
 
-    saddr = g_new0(SocketAddress, 1);
+    saddr = g_new0(SocketAddress, 1); //TODO mem leak?
 
     InetSocketAddress *inet;
     saddr->type = SOCKET_ADDRESS_KIND_INET;
-    inet = saddr->u.inet.data = g_new0(InetSocketAddress, 1);
-    inet->host = g_strdup(bindto);
-    inet->port = g_strdup(port);
+    inet = saddr->u.inet.data = g_new0(InetSocketAddress, 1); //TODO mem leak?
+    inet->host = g_strdup(bindto); //TODO mem leak?
+    inet->port = g_strdup(port); //TODO mem leak?
 
     return saddr;
 }
@@ -200,7 +209,7 @@ static void connect_to_io_socket(void)
     error_report("connection error");
 }
 
-static void write_to_io_channel_socket(char* buf, int len)
+static void write_to_io_channel_socket(unsigned char* buf, int len)
 {
   ssize_t res = qio_channel_write(io_channel, buf, len, &error_abort);
   error_report("send characters: %lu", res);
@@ -210,6 +219,7 @@ static void write_to_io_channel_socket(char* buf, int len)
 static uint64_t space_wire_read(void *opaque, hwaddr offset,
                            unsigned size)
 {
+  //TODO remove
     SpaceWireState *state = opaque;
     error_report("read:");
     qemu_set_irq(state->irq, 0);
@@ -247,6 +257,9 @@ void* main_loop(void* arg)
   while (1) {
     if (!(transmitDescTable[registers.trnsDescIndex].word0 & TRNS_DESCRIPTOR_ENABLE_MASK))
       break;
+
+    int header_len = transmitDescTable[registers.trnsDescIndex].word0 & 0xFF;
+    cpu_physical_memory_read(transmitDescTable[registers.trnsDescIndex].word1, &RMAPHeader, header_len * sizeof (uint8_t));
 
     unsigned char* package = NULL;
     int package_size = create_rmap_package(&transmitDescTable[registers.trnsDescIndex], &package);
