@@ -33,6 +33,7 @@
 
 #define SPW_FIFO_LENGTH 64
 #define RMAP_MIN_PACKAGE_LEN (SPW_TRANSMIT_MIN_HEADER_LEN + 1)
+#define RMAP_DATA_CRC_LEN 1
 #define RMAP_PROTOCOL_IDENTIFIER 0x01
 #define RMAP_package_TYPE_COMMAND 0x40
 #define RMAP_package_WRITE_COMMAND 0x20
@@ -41,6 +42,15 @@
 
 #define TYPE_SPACEWIRE "spacewire"
 #define SPACEWIRE(obj) OBJECT_CHECK(SpaceWireState, (obj), TYPE_SPACEWIRE)
+
+typedef enum _RMAP_Socket_Read_Status {
+		RMAP_SOCKET_READ_STATUS_START,
+		RMAP_SOCKET_READ_STATUS_DATA,
+		RMAP_SOCKET_READ_STATUS_PARTIAL_HEADER,
+		RMAP_SOCKET_READ_STATUS_PARTIAL_DATA,
+		RMAP_SOCKET_READ_STATUS_READ_EOP,
+		RMAP_SOCKET_READ_STATUS_COMPLETED
+	} RMAP_Socket_Read_Status;
 
 static QIOChannel *io_channel = NULL;
 static QemuThread socket_read_thread;
@@ -158,9 +168,9 @@ int create_rmap_package(SpWTransmitDescriptor *descriptor, unsigned char** packa
   *package = res;
 
   cpu_physical_memory_read(descriptor->word1, res, header_len);
-  for (int i = 0; i < RMAP_MIN_PACKAGE_LEN; ++i)
-    error_report("~~~ %x", res[i]);
-  error_report("~~~~~~~~~~~~~~~");
+  // for (int i = 0; i < RMAP_MIN_PACKAGE_LEN; ++i)
+  //   error_report("~~~ %x", res[i]);
+  // error_report("~~~~~~~~~~~~~~~");
 
   unsigned char header_crc = calculate_crc(res, header_len);
   res += header_len;
@@ -226,13 +236,133 @@ static uint64_t space_wire_read(void *opaque, hwaddr offset,
     return 0;
 }
 
+// void *read_from_socket(void *arg)
+// {
+//   error_report("read_from_socket()");
+//   while (1) {
+//     char buf[30] = "";
+//     int read_chars = qio_channel_read(io_channel, buf, 20, &error_abort);
+//     error_report("~~~~~~~~~~~~~~~~ read");
+//
+//     if (read_chars < 0) {
+//       error_report("Reading from socket failed");
+//       break;
+//     }
+//
+//     if (read_chars == 0) {
+//       error_report("Server disconnected");
+//       break;
+//     }
+//
+//     error_report("Message received");
+//   }
+//
+//   error_report("read_from_socket() end");
+//
+//   return NULL;
+// }
+
+int get_rmap_data_len(char* package)
+{
+  int res = 0;
+
+	res += package[12] << 16;
+	res += package[13] << 8;
+	res += package[14];
+
+	return res;
+}
+
 void *read_from_socket(void *arg)
 {
   error_report("read_from_socket()");
-  while (1) {
-    char buf[30] = "";
-    int read_chars = qio_channel_read(io_channel, buf, 20, &error_abort);
-    error_report("~~~~~~~~~~~~~~~~ read");
+  int read_chars = 1;
+	bool non_completed = true;
+	RMAP_Socket_Read_Status read_status = RMAP_SOCKET_READ_STATUS_START;
+  int current_package_len = 0;
+	char* buffer = (char*)malloc(RMAP_MAX_PACKAGE_LEN);
+
+	while (read_chars > 0) {
+		non_completed = true;
+
+		switch (read_status) {
+		case RMAP_SOCKET_READ_STATUS_START:
+		{
+      error_report("start");
+			read_chars = qio_channel_read(io_channel, buffer, RMAP_MIN_PACKAGE_LEN, &error_abort);
+
+			if (read_chars < RMAP_MIN_PACKAGE_LEN) {
+				read_status = RMAP_SOCKET_READ_STATUS_PARTIAL_HEADER;
+			} else {
+        for (int i = 0; i < read_chars; ++i)
+          error_report("%x", buffer[i]);
+        error_report("~~~~");
+
+				if (get_rmap_data_len(buffer) == 0)
+          read_status = RMAP_SOCKET_READ_STATUS_READ_EOP;
+        else
+          read_status = RMAP_SOCKET_READ_STATUS_DATA;
+			}
+		}
+		break;
+
+		case RMAP_SOCKET_READ_STATUS_DATA:
+		{
+      error_report("data");
+			int expected = get_rmap_data_len(buffer) + RMAP_DATA_CRC_LEN;
+			read_chars = qio_channel_read(io_channel, buffer + current_package_len, expected, &error_abort);
+
+			if (read_chars < expected)
+				read_status = RMAP_SOCKET_READ_STATUS_PARTIAL_DATA;
+			else
+				read_status = RMAP_SOCKET_READ_STATUS_READ_EOP;
+		}
+		break;
+
+		case RMAP_SOCKET_READ_STATUS_PARTIAL_HEADER:
+		{
+      error_report("partial_header");
+			read_chars = qio_channel_read(io_channel, buffer + current_package_len, RMAP_MIN_PACKAGE_LEN - current_package_len, &error_abort);
+
+			if (read_chars + current_package_len == RMAP_MIN_PACKAGE_LEN)
+				read_status = RMAP_SOCKET_READ_STATUS_DATA;
+		}
+		break;
+
+		case RMAP_SOCKET_READ_STATUS_PARTIAL_DATA:
+		{
+      error_report("partial_data");
+			int expected = get_rmap_data_len(buffer) + RMAP_DATA_CRC_LEN - read_chars;
+			read_chars = qio_channel_read(io_channel, buffer + current_package_len, expected, &error_abort);
+
+			if (current_package_len + read_chars == RMAP_MIN_PACKAGE_LEN + get_rmap_data_len(buffer) + RMAP_DATA_CRC_LEN) {
+				read_status = RMAP_SOCKET_READ_STATUS_READ_EOP;
+			}
+		}
+		break;
+
+		case RMAP_SOCKET_READ_STATUS_READ_EOP:
+		{
+      error_report("eop");
+			read_chars = qio_channel_read(io_channel, buffer + current_package_len, 1, &error_abort);
+			read_status = RMAP_SOCKET_READ_STATUS_COMPLETED;
+		}
+		break;
+
+		case RMAP_SOCKET_READ_STATUS_COMPLETED:
+		{
+			// on_package_received_({std::move(res)});
+      error_report("~~received | len: %d", current_package_len);
+			read_status = RMAP_SOCKET_READ_STATUS_START;
+			non_completed = false;
+		}
+
+		}
+
+		if (non_completed)
+      current_package_len += read_chars;
+    else
+      current_package_len = 0;
 
     if (read_chars < 0) {
       error_report("Reading from socket failed");
@@ -243,11 +373,7 @@ void *read_from_socket(void *arg)
       error_report("Server disconnected");
       break;
     }
-
-    error_report("Message received");
-  }
-
-  error_report("read_from_socket() end");
+	}
 
   return NULL;
 }
