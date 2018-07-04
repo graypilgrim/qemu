@@ -37,7 +37,7 @@
 #define RMAP_PROTOCOL_IDENTIFIER 0x01
 #define RMAP_package_TYPE_COMMAND 0x40
 #define RMAP_package_WRITE_COMMAND 0x20
-#define RMAP_EOP 0
+#define RMAP_EOP 0xf0
 #define RMAP_MAX_PACKAGE_LEN 16777215
 
 #define TYPE_SPACEWIRE "spacewire"
@@ -168,14 +168,15 @@ int create_rmap_package(SpWTransmitDescriptor *descriptor, unsigned char** packa
   *package = res;
 
   cpu_physical_memory_read(descriptor->word1, res, header_len);
-  // for (int i = 0; i < RMAP_MIN_PACKAGE_LEN; ++i)
-  //   error_report("~~~ %x", res[i]);
-  // error_report("~~~~~~~~~~~~~~~");
+  for (int i = 0; i < RMAP_MIN_PACKAGE_LEN; ++i)
+    error_report("~~~ %x", res[i]);
+  error_report("~~~~~~~~~~~~~~~");
 
   unsigned char header_crc = calculate_crc(res, header_len);
   res += header_len;
   *res = header_crc;
   ++res;
+	error_report("~~~ header crc: %x", header_crc);
 
   if (data_len > 0) {
     unsigned char data_crc = calculate_crc(res, data_len);
