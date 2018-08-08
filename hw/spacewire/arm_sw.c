@@ -284,13 +284,13 @@ void *main_loop(void *arg)
 	char* buffer = (char*)malloc(RMAP_MAX_PACKAGE_LEN);
 
 	while (read_chars > 0) {
-		non_completed = true;
-
 		switch (read_status) {
 		case RMAP_SOCKET_READ_STATUS_START:
 		{
+			error_report("start");
 			read_chars = qio_channel_read(io_channel, buffer, RMAP_MIN_PACKAGE_LEN, &error_abort);
-
+			non_completed = true;
+			current_package_len = 0;
 
 			if (read_chars < RMAP_MIN_PACKAGE_LEN) {
 				read_status = RMAP_SOCKET_READ_STATUS_PARTIAL_HEADER;
@@ -309,9 +309,11 @@ void *main_loop(void *arg)
 
 		case RMAP_SOCKET_READ_STATUS_DATA:
 		{
-      // error_report("data");
+      error_report("data");
 			unsigned expected = get_rmap_data_len(buffer) + RMAP_DATA_CRC_LEN;
+			error_report("expected: %u", expected);
 			read_chars = qio_channel_read(io_channel, buffer + current_package_len, expected, &error_abort);
+			error_report("read_chars: %d", read_chars);
 
 			if (read_chars < expected)
 				read_status = RMAP_SOCKET_READ_STATUS_PARTIAL_DATA;
@@ -322,7 +324,7 @@ void *main_loop(void *arg)
 
 		case RMAP_SOCKET_READ_STATUS_PARTIAL_HEADER:
 		{
-      // error_report("partial_header");
+      error_report("partial_header");
 			read_chars = qio_channel_read(io_channel, buffer + current_package_len, RMAP_MIN_PACKAGE_LEN - current_package_len, &error_abort);
 
 			if (read_chars + current_package_len == RMAP_MIN_PACKAGE_LEN)
@@ -332,10 +334,13 @@ void *main_loop(void *arg)
 
 		case RMAP_SOCKET_READ_STATUS_PARTIAL_DATA:
 		{
-      // error_report("partial_data");
-			unsigned expected = get_rmap_data_len(buffer) + RMAP_DATA_CRC_LEN - read_chars;
+      error_report("partial_data");
+			unsigned expected = RMAP_MIN_PACKAGE_LEN + get_rmap_data_len(buffer) + RMAP_DATA_CRC_LEN - current_package_len;
+			error_report("expected: %u", expected);
 			read_chars = qio_channel_read(io_channel, buffer + current_package_len, expected, &error_abort);
+			error_report("read_chars: %d", read_chars);
 
+			error_report("%d - %d", current_package_len + read_chars, RMAP_MIN_PACKAGE_LEN + get_rmap_data_len(buffer) + RMAP_DATA_CRC_LEN);
 			if (current_package_len + read_chars == RMAP_MIN_PACKAGE_LEN + get_rmap_data_len(buffer) + RMAP_DATA_CRC_LEN) {
 				read_status = RMAP_SOCKET_READ_STATUS_READ_EOP;
 			}
@@ -344,7 +349,7 @@ void *main_loop(void *arg)
 
 		case RMAP_SOCKET_READ_STATUS_READ_EOP:
 		{
-      // error_report("eop");
+      error_report("eop");
 			read_chars = qio_channel_read(io_channel, buffer + current_package_len, 1, &error_abort);
 			read_status = RMAP_SOCKET_READ_STATUS_COMPLETED;
 		}
@@ -352,7 +357,7 @@ void *main_loop(void *arg)
 
 		case RMAP_SOCKET_READ_STATUS_COMPLETED:
 		{
-      // error_report("~~received | len: %d", current_package_len);
+      error_report("~~received | len: %d", current_package_len);
 			log_package(buffer, false);
 			read_status = RMAP_SOCKET_READ_STATUS_START;
 			non_completed = false;
@@ -362,8 +367,6 @@ void *main_loop(void *arg)
 
 		if (non_completed)
       current_package_len += read_chars;
-    else
-      current_package_len = 0;
 
     if (read_chars < 0) {
       error_report("Reading from socket failed");
