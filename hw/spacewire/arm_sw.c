@@ -65,21 +65,6 @@ typedef struct SpaceWireState {
     qemu_irq irq;
 } SpaceWireState;
 
-// typedef struct _SpWRegisters {
-//     uint32_t control;
-//     uint32_t status;
-//     uint32_t defaultAddress;
-//     uint32_t clockDivisor;
-//     uint32_t destinationKey;
-//     uint32_t timeCode;
-//     uint32_t reserved[2];
-//     uint32_t dmaControl;
-//     uint32_t dmaRxMaxLength;
-//     uint32_t dmaTransmitDescriptorAddress;
-//     uint32_t dmaReceiveDescriptorAddress;
-//     uint32_t dmaAddress;
-// } SpWRegisters;
-
 typedef struct _SpWRegisters {
     uint32_t trnsDescIndex;
     uint32_t rcvDescIndex;
@@ -188,10 +173,8 @@ void log_package(uint8_t *package, bool sent)
   clock_gettime(CLOCK_MONOTONIC, &time1);
 	sprintf(res, "%u\t%s\t%u\t%s\t%ld:%ld\n", get_package_id(package), (sent ? "S" : "R"), get_rmap_data_len(package), "C", time1.tv_sec, time1.tv_nsec);
 	qio_channel_write(QIO_CHANNEL(file), res, strlen(res), &error_abort);
-	// error_report("%s", res);
 }
 
-//Logical addressing
 int create_rmap_package(SpWTransmitDescriptor *descriptor, unsigned char** package)
 {
   unsigned header_len = descriptor->word0 & SPW_TRANSMIT_DESC_HEADER_MASK;
@@ -205,9 +188,6 @@ int create_rmap_package(SpWTransmitDescriptor *descriptor, unsigned char** packa
   *package = res;
 
   cpu_physical_memory_read(descriptor->word1, res, header_len);
-  // for (int i = 0; i < RMAP_MIN_PACKAGE_LEN; ++i)
-  //   error_report("~~~ %x", res[i]);
-  // error_report("~~~~~~~~~~~~~~~");
 	res[RMAP_TRANSACTION_ID_MS_] = (uint8_t)(counter >> 8);
 	res[RMAP_TRANSACTION_ID_LS_] = (uint8_t)counter;
 	--counter;
@@ -216,7 +196,6 @@ int create_rmap_package(SpWTransmitDescriptor *descriptor, unsigned char** packa
   res += header_len;
   *res = header_crc;
   ++res;
-	// error_report("~~~ header crc: %x", header_crc);
 
   if (data_len > 0) {
     unsigned char data_crc = calculate_crc(res, data_len);
@@ -231,11 +210,11 @@ int create_rmap_package(SpWTransmitDescriptor *descriptor, unsigned char** packa
 }
 
 static SocketAddress *build_socket_address(const char *bindto, const char *port) {
-    SocketAddress *saddr = g_new0(SocketAddress, 1); //TODO mem leak?
+    SocketAddress *saddr = g_new0(SocketAddress, 1);
     saddr->type = SOCKET_ADDRESS_KIND_INET;
-    saddr->u.inet.data = g_new0(InetSocketAddress, 1); //TODO mem leak?
-    saddr->u.inet.data->host = g_strdup(bindto); //TODO mem leak?
-    saddr->u.inet.data->port = g_strdup(port); //TODO mem leak?
+    saddr->u.inet.data = g_new0(InetSocketAddress, 1);
+    saddr->u.inet.data->host = g_strdup(bindto);
+    saddr->u.inet.data->port = g_strdup(port);
 
     return saddr;
 }
@@ -244,12 +223,14 @@ static void connect_to_io_socket(void)
 {
   QemuOpts *machine_opts = qemu_get_machine_opts();
   const char *port = qemu_opt_get(machine_opts, "spw-port");
+  const char *addr = qemu_opt_get(machine_opts, "spw-addr");
   error_report("port inside spw : %s", port);
+  error_report("addr inside spw : %s", addr);
 
   io_channel = QIO_CHANNEL(qio_channel_socket_new());
   error_report("socket created");
 
-  SocketAddress *connect_addr = build_socket_address("127.0.0.1", port);
+  SocketAddress *connect_addr = build_socket_address(addr, port);
 
   int connection = qio_channel_socket_connect_sync(QIO_CHANNEL_SOCKET(io_channel), connect_addr, &error_abort);
   if (connection == -1)
@@ -258,8 +239,8 @@ static void connect_to_io_socket(void)
 
 static void write_to_io_channel_socket(unsigned char* buf, int len)
 {
-  ssize_t res = qio_channel_write(io_channel, buf, len, &error_abort);
 	log_package(buf, true);
+  ssize_t res = qio_channel_write(io_channel, buf, len, &error_abort);
   // error_report("send characters: %lu", res);
   // error_report("send");
 }
@@ -267,9 +248,7 @@ static void write_to_io_channel_socket(unsigned char* buf, int len)
 static uint64_t space_wire_read(void *opaque, hwaddr offset,
                            unsigned size)
 {
-  //TODO remove
     SpaceWireState *state = opaque;
-    // error_report("read:");
     qemu_set_irq(state->irq, 0);
     return 0;
 }
@@ -295,10 +274,7 @@ void *main_loop(void *arg)
 			if (read_chars < RMAP_MIN_PACKAGE_LEN) {
 				read_status = RMAP_SOCKET_READ_STATUS_PARTIAL_HEADER;
 			} else {
-        // for (int i = 0; i < read_chars; ++i)
-        //   error_report("%x", buffer[i]);
-        // error_report("~~~~");
-
+				log_package(buffer, false);
 				if (get_rmap_data_len(buffer) == 0)
           read_status = RMAP_SOCKET_READ_STATUS_READ_EOP;
         else
@@ -327,8 +303,10 @@ void *main_loop(void *arg)
       error_report("partial_header");
 			read_chars = qio_channel_read(io_channel, buffer + current_package_len, RMAP_MIN_PACKAGE_LEN - current_package_len, &error_abort);
 
-			if (read_chars + current_package_len == RMAP_MIN_PACKAGE_LEN)
+			if (read_chars + current_package_len == RMAP_MIN_PACKAGE_LEN) {
+				log_package(buffer, false);
 				read_status = RMAP_SOCKET_READ_STATUS_DATA;
+			}
 		}
 		break;
 
@@ -358,7 +336,6 @@ void *main_loop(void *arg)
 		case RMAP_SOCKET_READ_STATUS_COMPLETED:
 		{
       error_report("~~received | len: %d", current_package_len);
-			log_package(buffer, false);
 			read_status = RMAP_SOCKET_READ_STATUS_START;
 			non_completed = false;
 		}
@@ -429,25 +406,6 @@ static void space_wire_write(void *opaque, hwaddr offset,
         break;
       }
     }
-
-    // SpWTransmitDescriptor ptr;
-    // cpu_physical_memory_read(value, &ptr, sizeof(SpWTransmitDescriptor));
-    // error_report("write : %lu", value);
-    // error_report("state: %p", state);
-    // error_report("offset: %lu", offset);
-    // error_report("value: %lu", value);
-    //
-    // error_report("word0 = %u", ptr.word0);
-    // error_report("word1 = %u", ptr.word1);
-    // error_report("word2 = %u", ptr.word2);
-    // error_report("word3 = %u", ptr.word3);
-    //
-    // unsigned char *buf = create_rmap_package(&ptr);
-    // error_report("crc = %u", buf[15]);
-
-    // write_to_io_channel_socket();
-
-    // qemu_set_irq(state->irq, 1);
 }
 
 static void spacewire_set_irq(void *opaque, int irq, int level)
